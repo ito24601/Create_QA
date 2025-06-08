@@ -39,15 +39,32 @@ async def collect_qa(target_url: str, outfile: str, model_name: str): # domain �
         return
 
     existing_qa_set = set()
+    existing_qa_for_target_url_display = [] # エージェントへの指示に含めるための既存Q&Aリスト
     if os.path.exists(outfile):
         try:
             with jsonlines.open(outfile, "r") as reader:
-                for qa_obj in reader:
+                for qa_obj_dict in reader:
                     # question と answer のタプルをセットに追加して重複チェックに利用
-                    existing_qa_set.add((qa_obj.get("question"), qa_obj.get("answer")))
+                    existing_qa_set.add((qa_obj_dict.get("question"), qa_obj_dict.get("answer")))
+                    # 現在のtarget_urlに関連する既存Q&Aを収集
+                    if qa_obj_dict.get("source_url") == target_url:
+                        q = qa_obj_dict.get("question")
+                        a = qa_obj_dict.get("answer")
+                        if q and a: # 質問と回答が両方存在する場合のみ
+                            existing_qa_for_target_url_display.append(f"- Q: {q}\\n  A: {a}")
         except Exception as e:
             print(f"警告: 既存の出力ファイル '{outfile}' の読み込み中にエラーが発生しました: {e}")
 
+    existing_qa_instructions_segment = "現在、このURLに関する既存のQ&Aはありません。"
+    if existing_qa_for_target_url_display:
+        existing_qa_str = "\\n".join(existing_qa_for_target_url_display)
+        existing_qa_instructions_segment = (
+            f"以下のQ&Aペアは、このURL ({target_url}) に関して既に存在します。\\\\n"
+            f"これらとは異なる、新しい情報や視点からのQ&Aペアを生成してください。\\\\n"
+            f"---既存のQ&Aここから---\\\\n"
+            f"{existing_qa_str}\\\\n"
+            f"---既存のQ&Aここまで---"
+        )
 
     qa_agent = Agent(
         name        = "Web QA Collector",
@@ -55,9 +72,10 @@ async def collect_qa(target_url: str, outfile: str, model_name: str): # domain �
             "You are a knowledge extraction assistant.\\\\n"
             f"1. Your primary task is to analyze the content of a single, specific web page: {target_url}. Use the WebSearchTool for this purpose. Do NOT navigate away from this URL. Do NOT follow any links on the page. All information must come strictly from the content of {target_url}.\\\\n"
             f"2. Read and understand the content of the page at {target_url}.\\\\n"
-            f"3. From this single page ({target_url}), extract up to 3 question-answer pairs that would be genuinely helpful for an FAQ. Each pair must include the source URL, and this source URL MUST be exactly '{target_url}'.\\\\n"
-            "4. Avoid duplicate / trivial questions.\\\\n"
-            "5. The extracted question and answer MUST be in Japanese. If the source content is in another language, translate them to Japanese.\\\\n"  # 日本語での出力を指示
+            f"3. {existing_qa_instructions_segment}\\\\n" # 既存Q&A情報を指示に追加
+            f"4. From this single page ({target_url}), extract up to 3 new question-answer pairs that would be genuinely helpful for an FAQ, considering the existing Q&A above. Each pair must include the source URL, and this source URL MUST be exactly '{target_url}'.\\\\n"
+            "5. Avoid duplicate / trivial questions, including those listed in the existing Q&A section if provided.\\\\n"
+            "6. The extracted question and answer MUST be in Japanese. If the source content is in another language, translate them to Japanese.\\\\n"
             "Return the result as List[QAPair]."
         ),
         tools       = [WebSearchTool(search_context_size="high")],
