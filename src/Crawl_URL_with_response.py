@@ -42,13 +42,15 @@ def crawl_domain_with_response(start_url, max_urls=1000, output_file=None, state
 
     print(f'クロール対象ドメイン: {domain}')
     print(f'最大 {max_urls} 件まで収集します。')
+    print(f'状態ファイルから復元: 収集済み {len(results)} 件、キューに {len(queue)} 件') # 追加
 
     try:
         while queue and len(results) < max_urls:
             url = queue.pop(0)
             if url in seen:
                 continue
-            print(f'処理中: {url} (収集済み {len(results)}/{max_urls})')
+            # 変更: 収集済み件数とキューの残り件数を表示
+            print(f'処理中: {url} (収集済み {len(results)}/{max_urls}, キュー残り {len(queue)} 件)')
             seen.add(url)
 
             # リクエスト
