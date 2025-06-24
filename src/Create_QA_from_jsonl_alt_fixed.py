@@ -20,141 +20,103 @@ import jsonlines
 import os
 import argparse
 import threading
-import time
-from datetime import datetime
 from typing import List, Set, Tuple, Dict, Any, Optional
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from enum import Enum
 
-# agentsモジュールが Create_QA ディレクトリの親ディレクトリにあると仮定
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from agents import Agent, Runner # agentsモジュールからAgentとRunnerをインポート
 
 load_dotenv("/app/.env", override=True)
 
-# --- モデル設定管理クラス ---
-class ModelConfig:
-    """エージェント別モデル設定管理"""
+# --- エージェント設定管理クラス ---
+class AgentConfig:
+    """各エージェントの個別設定を管理するクラス"""
     
     def __init__(self, base_model: str = "gpt-4o-mini"):
         self.base_model = base_model
         
-        # デフォルトのモデル設定（品質重視）
-        self._qa_generation_model = "gpt-4o"          # 最重要: 高品質モデル
-        self._evaluation_model = "gpt-4o"             # 重要: 一貫性のある評価
-        self._improvement_model = "gpt-4o"            # 重要: 複雑な改善ロジック
-        self._persona_model = "gpt-4o-mini"           # 効率: 分類タスク
-        self._category_model = "gpt-4o-mini"          # 効率: 定型分類
-        self._keywords_model = "gpt-4o-mini"          # 効率: 語彙抽出
-        
-        # 品質モード設定
-        self.quality_mode = "high"  # "standard", "high", "premium"
-        
-    def set_quality_mode(self, mode: str):
-        """品質モードの設定"""
-        self.quality_mode = mode
-        
-        if mode == "premium":
-            # 最高品質: 全て高性能モデル
-            self._qa_generation_model = "gpt-4o"
-            self._evaluation_model = "gpt-4o"
-            self._improvement_model = "gpt-4o"
-            self._persona_model = "gpt-4o"
-            self._category_model = "gpt-4o-mini"
-            self._keywords_model = "gpt-4o-mini"
-        elif mode == "high":
-            # 高品質: 重要な処理に高性能モデル
-            self._qa_generation_model = "gpt-4o"
-            self._evaluation_model = "gpt-4o"
-            self._improvement_model = "gpt-4o"
-            self._persona_model = "gpt-4o-mini"
-            self._category_model = "gpt-4o-mini"
-            self._keywords_model = "gpt-4o-mini"
-        elif mode == "standard":
-            # 標準: バランス重視
-            self._qa_generation_model = "gpt-4o-mini"
-            self._evaluation_model = "gpt-4o-mini"
-            self._improvement_model = "gpt-4o-mini"
-            self._persona_model = "gpt-4o-mini"
-            self._category_model = "gpt-4o-mini"
-            self._keywords_model = "gpt-4o-mini"
-    
-    def set_uniform_model(self, model: str):
-        """全エージェントで同一モデル使用"""
-        self._qa_generation_model = model
-        self._evaluation_model = model
-        self._improvement_model = model
-        self._persona_model = model
-        self._category_model = model
-        self._keywords_model = model
-    
-    # 個別モデル設定メソッド
-    def set_qa_generation_model(self, model: str):
-        self._qa_generation_model = model
-        
-    def set_evaluation_model(self, model: str):
-        self._evaluation_model = model
-        
-    def set_improvement_model(self, model: str):
-        self._improvement_model = model
-        
-    def set_persona_model(self, model: str):
-        self._persona_model = model
-        
-    def set_category_model(self, model: str):
-        self._category_model = model
-        
-    def set_keywords_model(self, model: str):
-        self._keywords_model = model
-    
-    # モデル取得メソッド
-    @property
-    def qa_generation_model(self) -> str:
-        return self._qa_generation_model
-        
-    @property
-    def evaluation_model(self) -> str:
-        return self._evaluation_model
-        
-    @property
-    def improvement_model(self) -> str:
-        return self._improvement_model
-        
-    @property
-    def persona_model(self) -> str:
-        return self._persona_model
-        
-    @property
-    def category_model(self) -> str:
-        return self._category_model
-        
-    @property
-    def keywords_model(self) -> str:
-        return self._keywords_model
-    
-    def get_model_summary(self) -> Dict[str, str]:
-        """使用モデルの一覧を取得"""
-        return {
-            "QA生成": self._qa_generation_model,
-            "評価": self._evaluation_model,
-            "改善": self._improvement_model,
-            "ペルソナ": self._persona_model,
-            "カテゴリ": self._category_model,
-            "キーワード": self._keywords_model
+        # 各エージェントの個別設定
+        self.agents = {
+            "qa_generation": {
+                "model": "gpt-4o",  # 高品質が必要なのでより性能の高いモデル
+                "temperature": 0.7,  # 創造性を少し高める
+                "max_tokens": 1000,
+                "timeout": 60
+            },
+            "qa_evaluation": {
+                "model": "gpt-4o",  # 評価の一貫性のため高性能モデル
+                "temperature": 0.3,  # 評価の一貫性のため低温度
+                "max_tokens": 800,
+                "timeout": 45
+            },
+            "qa_improvement": {
+                "model": "gpt-4o",  # 改善には複雑な推論が必要
+                "temperature": 0.5,  # バランスの取れた創造性
+                "max_tokens": 1000,
+                "timeout": 60
+            },
+            "persona_analysis": {
+                "model": "gpt-4o-mini",  # 分類タスクなので効率的なモデル
+                "temperature": 0.2,  # 分類の一貫性のため低温度
+                "max_tokens": 200,
+                "timeout": 30
+            },
+            "category_analysis": {
+                "model": "gpt-4o-mini",  # 分類タスクなので効率的なモデル
+                "temperature": 0.2,  # 分類の一貫性のため低温度
+                "max_tokens": 200,
+                "timeout": 30
+            },
+            "keyword_extraction": {
+                "model": "gpt-4o-mini",  # キーワード抽出は効率的なモデルで十分
+                "temperature": 0.1,  # キーワード抽出の一貫性のため最低温度
+                "max_tokens": 300,
+                "timeout": 30
+            }
         }
     
-    def print_model_config(self):
-        """現在のモデル設定を表示"""
-        print(f"🤖 エージェント別モデル設定 (品質モード: {self.quality_mode})")
-        print(f"=" * 50)
-        for agent, model in self.get_model_summary().items():
-            print(f"  {agent:8}: {model}")
-        print(f"=" * 50)
+    def get_agent_config(self, agent_name: str) -> Dict[str, Any]:
+        """指定されたエージェントの設定を取得"""
+        return self.agents.get(agent_name, {
+            "model": self.base_model,
+            "temperature": 0.5,
+            "max_tokens": 500,
+            "timeout": 30
+        })
+    
+    def set_agent_model(self, agent_name: str, model: str):
+        """特定のエージェントのモデルを設定"""
+        if agent_name in self.agents:
+            self.agents[agent_name]["model"] = model
+    
+    def set_agent_temperature(self, agent_name: str, temperature: float):
+        """特定のエージェントのtemperatureを設定"""
+        if agent_name in self.agents:
+            self.agents[agent_name]["temperature"] = temperature
+    
+    def set_quality_mode(self, mode: str):
+        """品質モードを設定（all_premium, all_standard, balanced）"""
+        if mode == "all_premium":
+            # すべて最高性能モデル
+            for agent_name in self.agents:
+                self.agents[agent_name]["model"] = "gpt-4o"
+        elif mode == "all_standard":
+            # すべて標準モデル
+            for agent_name in self.agents:
+                self.agents[agent_name]["model"] = "gpt-4o-mini"
+        elif mode == "balanced":
+            # デフォルト設定（重要なタスクのみ高性能モデル）
+            pass  # 既にデフォルト設定済み
+    
+    def print_config(self):
+        """現在の設定を表示"""
+        print("🔧 エージェント設定:")
+        for agent_name, config in self.agents.items():
+            print(f"  {agent_name}: {config['model']} (temp: {config['temperature']}, max_tokens: {config['max_tokens']})")
 
-# グローバルモデル設定インスタンス
-model_config = ModelConfig()
+# グローバル設定インスタンス
+agent_config = AgentConfig()
 
 # --- データモデル ---
 class EvaluationScore(str, Enum):
@@ -218,14 +180,12 @@ async def generate_basic_qa(
     source_identifier: str, # URLやファイル名など、コンテンツの出典
     text_content: str,
     existing_qa_for_source_display: List[str],
+    model_name: str,
     attempt_number: int  # 何回目の試行かを明示
 ) -> Optional[BasicQAPair]:
     """
     基本的なQ&Aペアのみを生成（メタデータなし）
     """
-    # 専用モデルを使用
-    model_name = model_config.qa_generation_model
-    
     if not existing_qa_for_source_display:
         existing_qa_instructions_segment = "There are currently no existing Q&A pairs for this source."
     else:
@@ -238,6 +198,9 @@ async def generate_basic_qa(
             f"---Existing Q&A End---"
         )
 
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("qa_generation")
+    
     qa_generation_agent = Agent(
         name="QA Generation Specialist",
         instructions=(
@@ -261,7 +224,7 @@ async def generate_basic_qa(
             f"9. The source_url must be exactly: '{source_identifier}'"
         ),
         output_type=BasicQAPair,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
@@ -274,7 +237,6 @@ async def generate_basic_qa(
                 qa_dict = qa.model_dump()
                 qa_dict["source_url"] = source_identifier
                 return BasicQAPair(**qa_dict)
-            print(f"    🤖 Q&A生成モデル: {model_name}")
             return qa
     except Exception as e:
         print(f"    ❌ Q&A生成エラー: {e}")
@@ -285,13 +247,15 @@ async def generate_basic_qa(
 async def generate_persona(
     basic_qa: BasicQAPair,
     source_identifier: str,
-    text_content: str
+    text_content: str,
+    model_name: str
 ) -> Optional[PersonaResult]:
     """
     Q&Aペルソナ分析専用エージェント
     """
-    # 専用モデルを使用
-    model_name = model_config.persona_model
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("persona_analysis")
+    
     persona_agent = Agent(
         name="Persona Analysis Specialist",
         instructions=(
@@ -316,13 +280,11 @@ async def generate_persona(
             "8. Return exactly ONE PersonaResult object with questioner_persona field."
         ),
         output_type=PersonaResult,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
         result = await Runner.run(persona_agent, input=f"Analyze persona for Q&A: {basic_qa.question}")
-        if result.final_output:
-            print(f"    🤖 ペルソナ分析モデル: {model_name}")
         return result.final_output if result.final_output else None
     except Exception as e:
         print(f"    ⚠️ ペルソナ分析エラー: {e}")
@@ -332,13 +294,15 @@ async def generate_persona(
 async def generate_category(
     basic_qa: BasicQAPair,
     source_identifier: str,
-    text_content: str
+    text_content: str,
+    model_name: str
 ) -> Optional[CategoryResult]:
     """
     Q&Aカテゴリ分類専用エージェント
     """
-    # 専用モデルを使用
-    model_name = model_config.category_model
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("category_analysis")
+    
     category_agent = Agent(
         name="Category Classification Specialist",
         instructions=(
@@ -364,13 +328,11 @@ async def generate_category(
             "8. Return exactly ONE CategoryResult object with information_category field."
         ),
         output_type=CategoryResult,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
         result = await Runner.run(category_agent, input=f"Classify category for Q&A: {basic_qa.question}")
-        if result.final_output:
-            print(f"    🤖 カテゴリ分類モデル: {model_name}")
         return result.final_output if result.final_output else None
     except Exception as e:
         print(f"    ⚠️ カテゴリ分類エラー: {e}")
@@ -380,13 +342,15 @@ async def generate_category(
 async def generate_keywords(
     basic_qa: BasicQAPair,
     source_identifier: str,
-    text_content: str
+    text_content: str,
+    model_name: str
 ) -> Optional[KeywordsResult]:
     """
     Q&Aキーワード抽出専用エージェント
     """
-    # 専用モデルを使用
-    model_name = model_config.keywords_model
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("keyword_extraction")
+    
     keywords_agent = Agent(
         name="Keywords Extraction Specialist",
         instructions=(
@@ -411,13 +375,11 @@ async def generate_keywords(
             "8. Return exactly ONE KeywordsResult object with related_keywords list (3-5 items)."
         ),
         output_type=KeywordsResult,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
         result = await Runner.run(keywords_agent, input=f"Extract keywords for Q&A: {basic_qa.question}")
-        if result.final_output:
-            print(f"    🤖 キーワード抽出モデル: {model_name}")
         return result.final_output if result.final_output else None
     except Exception as e:
         print(f"    ⚠️ キーワード抽出エラー: {e}")
@@ -427,13 +389,15 @@ async def generate_keywords(
 async def evaluate_qa_quality(
     basic_qa: BasicQAPair,
     source_identifier: str,
-    text_content: str
+    text_content: str,
+    model_name: str
 ) -> Optional[QAEvaluation]:
     """
     生成されたQ&Aの品質を評価する専用エージェント
     """
-    # 専用モデルを使用
-    model_name = model_config.evaluation_model
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("qa_evaluation")
+    
     evaluation_agent = Agent(
         name="QA Quality Evaluator",
         instructions=(
@@ -496,13 +460,11 @@ async def evaluate_qa_quality(
             "11. Return exactly ONE QAEvaluation object with all required fields."
         ),
         output_type=QAEvaluation,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
         result = await Runner.run(evaluation_agent, input=f"Evaluate Q&A quality: {basic_qa.question}")
-        if result.final_output:
-            print(f"    🤖 評価モデル: {model_name}")
         return result.final_output if result.final_output else None
     except Exception as e:
         print(f"    ⚠️ Q&A評価エラー: {e}")
@@ -513,13 +475,15 @@ async def improve_qa_based_on_feedback(
     basic_qa: BasicQAPair,
     evaluation: QAEvaluation,
     source_identifier: str,
-    text_content: str
+    text_content: str,
+    model_name: str
 ) -> Optional[BasicQAPair]:
     """
     評価フィードバックに基づいてQ&Aを改善する専用エージェント
     """
-    # 専用モデルを使用
-    model_name = model_config.improvement_model
+    # 個別エージェント設定を取得
+    config = agent_config.get_agent_config("qa_improvement")
+    
     improvement_agent = Agent(
         name="QA Improvement Specialist",
         instructions=(
@@ -560,7 +524,7 @@ async def improve_qa_based_on_feedback(
             "10. Return exactly ONE BasicQAPair object with the improved question and answer"
         ),
         output_type=BasicQAPair,
-        model=model_name,
+        model=config["model"],
     )
 
     try:
@@ -572,9 +536,7 @@ async def improve_qa_based_on_feedback(
             if improved_qa.source_url != source_identifier:
                 qa_dict = improved_qa.model_dump()
                 qa_dict["source_url"] = source_identifier
-                print(f"    🤖 改善モデル: {model_name}")
                 return BasicQAPair(**qa_dict)
-            print(f"    🤖 改善モデル: {model_name}")
             return improved_qa
     except Exception as e:
         print(f"    ⚠️ Q&A改善エラー: {e}")
@@ -586,23 +548,19 @@ async def generate_complete_qa_with_evaluation(
     source_identifier: str,
     text_content: str,
     existing_qa_for_source_display: List[str],
+    model_name: str,
     attempt_number: int,
     max_improvement_iterations: int = 2
 ) -> Optional[QAPair]:
     """
     評価・改善サイクル付きで完全なQ&Aペアを生成
     """
-    # モデル設定の表示
-    print(f"    🎯 エージェント別モデル使用:")
-    model_summary = model_config.get_model_summary()
-    for agent, model in model_summary.items():
-        print(f"      {agent}: {model}")
-    
     # Step 1: 基本Q&A生成
     basic_qa = await generate_basic_qa(
         source_identifier,
         text_content,
         existing_qa_for_source_display,
+        model_name,
         attempt_number
     )
     
@@ -617,7 +575,8 @@ async def generate_complete_qa_with_evaluation(
     evaluation = await evaluate_qa_quality(
         basic_qa,
         source_identifier,
-        text_content
+        text_content,
+        model_name
     )
     
     if not evaluation:
@@ -646,7 +605,8 @@ async def generate_complete_qa_with_evaluation(
                     current_qa,
                     evaluation,
                     source_identifier,
-                    text_content
+                    text_content,
+                    model_name
                 )
                 
                 if improved_qa:
@@ -658,7 +618,8 @@ async def generate_complete_qa_with_evaluation(
                     re_evaluation = await evaluate_qa_quality(
                         improved_qa,
                         source_identifier,
-                        text_content
+                        text_content,
+                        model_name
                     )
                     
                     if re_evaluation and re_evaluation.overall_score > evaluation.overall_score:
@@ -687,9 +648,9 @@ async def generate_complete_qa_with_evaluation(
     # Step 4-6: メタデータ生成（既存の3エージェント並列実行）
     print(f"    🔍 メタデータ分析中...")
     
-    persona_task = generate_persona(current_qa, source_identifier, text_content)
-    category_task = generate_category(current_qa, source_identifier, text_content)  
-    keywords_task = generate_keywords(current_qa, source_identifier, text_content)
+    persona_task = generate_persona(current_qa, source_identifier, text_content, model_name)
+    category_task = generate_category(current_qa, source_identifier, text_content, model_name)  
+    keywords_task = generate_keywords(current_qa, source_identifier, text_content, model_name)
     
     persona_result, category_result, keywords_result = await asyncio.gather(
         persona_task, category_task, keywords_task, return_exceptions=True
@@ -737,6 +698,7 @@ async def generate_complete_qa_without_evaluation(
     source_identifier: str,
     text_content: str,
     existing_qa_for_source_display: List[str],
+    model_name: str,
     attempt_number: int
 ) -> Optional[QAPair]:
     """
@@ -747,6 +709,7 @@ async def generate_complete_qa_without_evaluation(
         source_identifier,
         text_content,
         existing_qa_for_source_display,
+        model_name,
         attempt_number
     )
     
@@ -760,9 +723,9 @@ async def generate_complete_qa_without_evaluation(
     print(f"    🔍 メタデータ分析中...")
     
     # 並列でメタデータ生成
-    persona_task = generate_persona(basic_qa, source_identifier, text_content)
-    category_task = generate_category(basic_qa, source_identifier, text_content)
-    keywords_task = generate_keywords(basic_qa, source_identifier, text_content)
+    persona_task = generate_persona(basic_qa, source_identifier, text_content, model_name)
+    category_task = generate_category(basic_qa, source_identifier, text_content, model_name)
+    keywords_task = generate_keywords(basic_qa, source_identifier, text_content, model_name)
     
     # 並列実行
     persona_result, category_result, keywords_result = await asyncio.gather(
@@ -849,6 +812,7 @@ def save_qa_to_file(qa: QAPair, outfile: str) -> bool:
 async def process_single_entry(
     entry_data: Tuple[int, Dict[str, Any]],
     outfile: str,
+    model_name: str,
     source_id_field: str,
     content_field: str,
     max_q_per_entry: int,
@@ -887,6 +851,7 @@ async def process_single_entry(
                 source_identifier,
                 text_content,
                 existing_qa_for_current_source_display,
+                model_name,
                 attempt + 1,
                 max_improvement_iterations
             )
@@ -896,6 +861,7 @@ async def process_single_entry(
                 source_identifier,
                 text_content,
                 existing_qa_for_current_source_display,
+                model_name,
                 attempt + 1
             )
         
@@ -941,6 +907,7 @@ async def process_single_entry(
 async def process_jsonl_parallel_entries(
     input_jsonl_path: str,
     outfile: str,
+    model_name: str,
     source_id_field: str,
     content_field: str,
     max_q_per_entry: int = 1,
@@ -983,7 +950,7 @@ async def process_jsonl_parallel_entries(
     print(f"📂 入力ファイル: {input_jsonl_path}")
     print(f"💾 出力ファイル: {outfile}")
     print(f"🔢 処理エントリ数: {len(entries)}")
-    model_config.print_model_config()
+    print(f"🤖 使用モデル: {model_name}")
     print(f"📊 エントリあたりQ&A数: {max_q_per_entry}")
     print(f"⚡ 最大並列数: {max_concurrent_entries}")
     print(f"🔧 処理モード: {processing_mode}")
@@ -1002,6 +969,7 @@ async def process_jsonl_parallel_entries(
             return await process_single_entry(
                 entry_data,
                 outfile,
+                model_name,
                 source_id_field,
                 content_field,
                 max_q_per_entry,
@@ -1036,6 +1004,7 @@ async def process_jsonl_parallel_entries(
 async def process_jsonl_single_qa_mode(
     input_jsonl_path: str,
     outfile: str,
+    model_name: str,
     source_id_field: str,
     content_field: str,
     max_q_per_entry: int = 3,
@@ -1047,6 +1016,7 @@ async def process_jsonl_single_qa_mode(
     await process_jsonl_parallel_entries(
         input_jsonl_path,
         outfile,
+        model_name,
         source_id_field,
         content_field,
         max_q_per_entry,
@@ -1056,20 +1026,56 @@ async def process_jsonl_single_qa_mode(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="評価・改善サイクル付き6段階エージェント処理でJSONLファイルからQ&Aペアを生成")
-    parser.add_argument("--input_jsonl", type=str, required=True, help="入力JSONLファイル")
-    parser.add_argument("--outfile", type=str, default="generated_qas_with_evaluation.jsonl", help="出力ファイル")
-    parser.add_argument("--model", type=str, default="gpt-4o-mini", help="使用モデル")
-    parser.add_argument("--source_id_field", type=str, default="url", help="ソースIDフィールド名")
-    parser.add_argument("--content_field", type=str, default="response_text", help="コンテンツフィールド名")
+    parser = argparse.ArgumentParser(description="6段階エージェント処理でJSONLファイルからQ&Aペア生成（評価・改善サイクル付き）")
+    parser.add_argument("--input_jsonl", required=True, help="入力JSONLファイルパス")
+    parser.add_argument("--outfile", required=True, help="出力JSONLファイルパス")
+    parser.add_argument("--model", default="gpt-4o-mini", help="使用するモデル名（デフォルト設定上書き用）")
+    parser.add_argument("--source_id_field", default="url", help="ソースID用フィールド名")
+    parser.add_argument("--content_field", default="response_body", help="コンテンツ用フィールド名")
     parser.add_argument("--max_q_per_entry", type=int, default=1, help="エントリあたり最大Q&A数")
-    parser.add_argument("--max_entries", type=int, default=-1, help="処理最大エントリ数")
-    parser.add_argument("--max_concurrent", type=int, default=1, help="同時処理エントリ数（評価・改善サイクルのため1推奨）")
+    parser.add_argument("--max_entries", type=int, default=-1, help="処理するエントリ数上限（-1で全て）")
+    parser.add_argument("--max_concurrent", type=int, default=1, help="並列実行数")
     parser.add_argument("--disable_evaluation", action="store_true", help="評価・改善サイクルを無効化")
-    parser.add_argument("--max_improvement_iterations", type=int, default=2, help="最大改善試行回数")
-
+    parser.add_argument("--max_improvement_iterations", type=int, default=2, help="改善サイクル最大回数")
+    
+    # エージェント設定オプション
+    parser.add_argument("--quality_mode", choices=["standard", "balanced", "all_premium"], default="balanced", 
+                        help="品質モード: standard（全てgpt-4o-mini）, balanced（重要タスクgpt-4o）, all_premium（全てgpt-4o）")
+    parser.add_argument("--qa_generation_model", help="Q&A生成エージェント専用モデル")
+    parser.add_argument("--evaluation_model", help="評価エージェント専用モデル")
+    parser.add_argument("--improvement_model", help="改善エージェント専用モデル")
+    parser.add_argument("--persona_model", help="ペルソナ分析エージェント専用モデル")
+    parser.add_argument("--category_model", help="カテゴリ分析エージェント専用モデル")
+    parser.add_argument("--keywords_model", help="キーワード抽出エージェント専用モデル")
+    
     args = parser.parse_args()
-
+    
+    # エージェント設定の適用
+    agent_config.set_quality_mode(args.quality_mode)
+    
+    # 個別モデル設定の適用
+    if args.qa_generation_model:
+        agent_config.set_agent_model("qa_generation", args.qa_generation_model)
+    if args.evaluation_model:
+        agent_config.set_agent_model("qa_evaluation", args.evaluation_model)
+    if args.improvement_model:
+        agent_config.set_agent_model("qa_improvement", args.improvement_model)
+    if args.persona_model:
+        agent_config.set_agent_model("persona_analysis", args.persona_model)
+    if args.category_model:
+        agent_config.set_agent_model("category_analysis", args.category_model)
+    if args.keywords_model:
+        agent_config.set_agent_model("keyword_extraction", args.keywords_model)
+    
+    # 設定表示
+    print("🚀 6段階エージェント処理開始")
+    print(f"📄 入力ファイル: {args.input_jsonl}")
+    print(f"📋 出力ファイル: {args.outfile}")
+    print(f"🎯 品質モード: {args.quality_mode}")
+    print(f"🔄 評価・改善: {'有効' if not args.disable_evaluation else '無効'}")
+    agent_config.print_config()
+    print()
+    
     asyncio.run(process_jsonl_parallel_entries(
         args.input_jsonl,
         args.outfile,
@@ -1084,55 +1090,64 @@ if __name__ == "__main__":
     ))
 
 """
-評価・改善サイクル付き6段階エージェント処理コマンド実行例:
+🔧 【エージェント個別設定の使用例】
 
-# 評価・改善サイクル付き処理（推奨）
-python /app/Create_QA/src/Create_QA_from_jsonl_alt_fixed.py \
-    --input_jsonl /app/aflac_with_body.jsonl \
-    --outfile /app/aflac_qa_with_evaluation.jsonl \
-    --model gpt-4o-mini \
-    --source_id_field url \
-    --content_field response_text \
-    --max_q_per_entry 1 \
-    --max_concurrent 1 \
-    --max_improvement_iterations 2
+# 1. 品質モード設定
+--quality_mode standard     # 全エージェントgpt-4o-mini（低コスト）
+--quality_mode balanced     # 重要タスクのみgpt-4o（推奨）
+--quality_mode all_premium  # 全エージェントgpt-4o（最高品質）
 
-# 評価・改善なしの従来処理
-python /app/Create_QA/src/Create_QA_from_jsonl_alt_fixed.py \
-    --input_jsonl /app/aflac_with_body.jsonl \
-    --outfile /app/aflac_qa_standard.jsonl \
-    --model gpt-4o-mini \
-    --disable_evaluation \
-    --max_concurrent 2
+# 2. 個別エージェント設定
+--qa_generation_model gpt-4o        # Q&A生成のみ高性能モデル
+--evaluation_model gpt-4o-mini      # 評価は効率重視
+--improvement_model gpt-4o          # 改善は高性能モデル
+--persona_model gpt-4o-mini         # ペルソナ分析は効率重視
+--category_model gpt-4o-mini        # カテゴリ分類は効率重視
+--keywords_model gpt-4o-mini        # キーワード抽出は効率重視
 
-# テスト実行（少数データで評価機能確認）
-python /app/Create_QA/src/Create_QA_from_jsonl_alt_fixed.py \
-    --input_jsonl /app/aflac_with_body.jsonl \
-    --outfile /app/test_evaluation.jsonl \
-    --model gpt-4o-mini \
-    --max_entries 2 \
-    --max_improvement_iterations 1
+# 3. コスト最適化の例（重要な処理のみ高性能モデル）
+python Create_QA_from_jsonl_alt_fixed.py \
+    --input_jsonl data.jsonl \
+    --outfile output.jsonl \
+    --quality_mode standard \
+    --qa_generation_model gpt-4o \
+    --evaluation_model gpt-4o
 
-【評価・改善サイクル付き6段階エージェント処理の特徴】
-1️⃣ QA生成専用エージェント: 質問と回答の生成に集中
-2️⃣ QA評価専用エージェント: 品質評価（ソース整合性、質問特定性、条件明確性）
-3️⃣ QA改善専用エージェント: 評価フィードバックに基づく改善
-4️⃣ ペルソナ分析専用エージェント: 質問者のペルソナ特定に特化
-5️⃣ カテゴリ分類専用エージェント: 情報カテゴリの分類に特化  
-6️⃣ キーワード抽出専用エージェント: 関連キーワード抽出に特化
+# 4. 最高品質設定の例
+python Create_QA_from_jsonl_alt_fixed.py \
+    --input_jsonl data.jsonl \
+    --outfile output.jsonl \
+    --quality_mode all_premium
 
-🔧 各エージェントが超専門分野に集中し、最高品質を追求
-🔄 評価・改善サイクルで品質向上を自動化
-⚡ メタデータエージェントは並列実行で効率化
-🛡️ 各段階でエラーハンドリング: 失敗時もデフォルト値で続行
-📊 詳細な進捗表示: 各エージェントの成功/失敗を明確に表示
-📈 品質スコア・改善履歴の記録
+# 5. カスタム設定の例
+python Create_QA_from_jsonl_alt_fixed.py \
+    --input_jsonl data.jsonl \
+    --outfile output.jsonl \
+    --qa_generation_model gpt-4o \
+    --improvement_model gpt-4o \
+    --evaluation_model gpt-4o-mini \
+    --persona_model gpt-4o-mini \
+    --category_model gpt-4o-mini \
+    --keywords_model gpt-4o-mini
 
-評価基準:
-- ソース整合性(40%): 回答が元ソースに基づいているか
-- 質問特定性(40%): 質問が十分に具体的で条件を含むか
-- 条件明確性(20%): 保険商品名や条件が明確に示されているか
+これにより、以下のような柔軟な運用が可能です：
+✅ コスト重視: 分類系タスクは効率的なモデル、生成系は高性能モデル
+✅ 品質重視: 全てのエージェントで最高性能モデルを使用
+✅ バランス重視: 重要度に応じてモデルを使い分け
+✅ 実験的運用: 特定のエージェントのみ異なるモデルでテスト
 
-改善プロセス:
-1. 基本Q&A生成 → 2. 品質評価 → 3. 改善必要時は改善実行 → 4. 再評価 → 5. メタデータ付与
+評価・改善サイクル付き6段階エージェント処理でJSONLファイルからQ&Aペア生成
+
+このスクリプトは、JSONLファイルから高品質なQ&Aペアを生成するために、
+6つの専門エージェントを使用します：
+
+1. Q&A生成エージェント: 基本的な質問-回答ペアを生成
+2. Q&A評価エージェント: 生成されたQ&Aの品質を評価
+3. Q&A改善エージェント: 評価フィードバックに基づいてQ&Aを改善
+4. ペルソナ分析エージェント: 質問者のペルソナを特定
+5. カテゴリ分類エージェント: 情報カテゴリを分類
+6. キーワード抽出エージェント: 関連キーワードを抽出
+
+各エージェントは特定の専門分野に集中し、高品質な結果を提供します。
+評価・改善サイクルにより、自動的にQ&Aの品質向上を図ります。
 """
